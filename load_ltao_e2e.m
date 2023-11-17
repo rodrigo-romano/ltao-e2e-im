@@ -25,7 +25,7 @@ clear osim
 osim.reduce_model = 0;  % DO NOT ENABLE UNTIL TODO IS DONE![bool] model reduction feature
 osim.dc_mm_comp = 1;    % [bool] DC mismatch compensation
 osim.bpless_wl = 1;     % [bool] Smoothing wind load
-osim.wload_en = 0;      % [bool] Wind load input
+osim.wload_en = 1;      % [bool] Wind load input
 % MNT
 osim.mntC_en = 1;       % [bool] Mount feedback control loop switch
 osim.en_servo = 0;      % [bool] Enable/disable mount trajectory
@@ -318,7 +318,7 @@ end
 
 
 if(0)
-    [Ues,Ses,Ves] = svd(Km1rbm_es, "econ");
+    [~,Ses,~] = svd(Km1rbm_es, "econ");
     figure(99)
     sigma = diag(Ses);
     semilogy(sigma,'+'); hold on;
@@ -326,7 +326,7 @@ if(0)
     ylabel('Singular values of the M1RBM-to-ES\_MEAS transformation');
     xlabel('Singular mode #');
     
-    [Ues_,Ses_,Ves_] = svd(Km1rbm_es(:,1:36), "econ");
+    [~,Ses_,~] = svd(Km1rbm_es(:,1:36), "econ");
     sigma_ = diag(Ses_);
     semilogy(sigma_,'x'); hold on;
     legend('D_{M1ES} singular values','Filtered (ill-conditioned) modes',...
@@ -348,21 +348,83 @@ if(0)
     ylabel(cbar,'M1 rec-induced PTT','Fontsize',12)
 end
 
+%% M2ES Reconstruction matrix
+% -------------------
+
+% Indices of M2 force inputs
+in_m2p_mc = inputTable{'MC_M2_SmHex_F',"indices"}{1}(1:2:end);	%macrocell side
+in_m2p_m2 = inputTable{'MC_M2_SmHex_F',"indices"}{1}(2:2:end);	%mirror segment side
+% Indices of M2 POS displacements
+out_m2p_mc = outputTable{'MC_M2_SmHex_D',"indices"}{1}(1:2:end);	%macrocell side
+out_m2p_m2 = outputTable{'MC_M2_SmHex_D',"indices"}{1}(2:2:end);	%mirror seg side
+% M2 reference body (RB) RBM (local CS) output indices
+out_asm_RB = outputTable{'MC_M2_RB_6D',"indices"}{1};
+% M2 ES output indices
+out_m2es = outputTable{'M2_edge_sensors',"indices"}{1};
+
+% M2 POS 6F -> M2 POS 6D
+K_m2p = gainMatrix(out_m2p_mc,in_m2p_mc) -gainMatrix(out_m2p_mc,in_m2p_m2) ...
+        - gainMatrix(out_m2p_m2,in_m2p_mc) +gainMatrix(out_m2p_m2,in_m2p_m2);
+
+% M2 POS 6F -> ASM RB
+K_m2p_2_asm = gainMatrix(out_asm_RB,in_m2p_mc) - gainMatrix(out_asm_RB,in_m2p_m2);
+% ASM RB -> M2P 6D
+K_asm_2_m2p = K_m2p / K_m2p_2_asm;
+% M2 POS 6F -> M2ES
+K_m2p_2_es = gainMatrix(out_m2es,in_m2p_mc)-gainMatrix(out_m2es,in_m2p_m2);
+% ASM RB -> M2ES
+K_asm_2_es = K_m2p_2_es / K_m2p_2_asm;
+
+if(0), Rm2es = [pinv(K_asm_2_es(:,1:36), 1e-2); zeros(6,48)];
+else, Rm2es = pinv(K_asm_2_es, 1e-2);
+end
+
+if(0)
+    [Ues,Ses,Ves] = svd(K_asm_2_es, "econ");
+    figure(100)
+    sigma = diag(Ses);
+    semilogy(sigma,'+'); hold on;
+    Tmodes = 37:42; semilogy(Tmodes, sigma(Tmodes),'o','MarkerSize',12);
+    ylabel('Singular values of the M2RBM-to-ES\_MEAS transformation');
+    xlabel('Singular mode #');
+    
+    [Ues_,Ses_,Ves_] = svd(K_asm_2_es(:,1:36), "econ");
+    sigma_ = diag(Ses_);
+    semilogy(sigma_,'x'); hold on;
+    legend('D_{M2ES} singular values','Filtered (ill-conditioned) modes',...
+        '\sigma(D_{M2ES}(:,1:36))','fontsize',12,'location','southwest');
+    grid on; hold off; xlim([0,43]);
+
+    figure(102)
+    subplot(121)
+    imagesc(Rm2es*(K_asm_2_es));
+    ylabel('Reconstructed M2-RBM','Fontsize',14);
+    xlabel('M2-RBM (S1TxyzRxyz,...,S7TxyzRxyz)','Fontsize',14);
+    cbar = colorbar;
+    ylabel(cbar,'M2RBM rec - Txyz[um/um] or Rxyz[um/urad]','Fontsize',12)
+    subplot(122)
+    imagesc([D_seg_tt(:,43:84);D_seg_piston(:,43:84)]*Rm2es*(K_asm_2_es));
+    ylabel('Rec M2-induced TTP ','Fontsize',14);
+    xlabel('M2-RBM (S1TxyzRxyz,...,S7TxyzRxyz)','Fontsize',14);
+    cbar = colorbar;
+    ylabel(cbar,'M2 rec-induced PTT','Fontsize',12)
+end
+
 %%
 rng('default');
-% m1m2_segP_dist = [pinv(D_seg_piston(:,1:42))*...
-%     1e-6*[-0.1659   -0.5880    0.8959   -0.8359   -0.7886   -0.7159   -0.6671]';...
-%     zeros(42,1)];
-% 0*pinv(D_seg_piston)*...
+% m1_rbm_dist = pinv(D_seg_piston(:,1:42))*...
 %     1e-6*[-0.1659   -0.5880    0.8959   -0.8359   -0.7886   -0.7159   -0.6671]';
-% 1e-5*randn(84,1);
-%
-% m1m2_segP_dist = [1e-5*randn(42,1); zeros(42,1)];
-%
-% m1m2_segP_dist = [pinv([0*D_seg_tt(:,1:42); D_seg_piston(:,1:42)])*...
-%     1e-5*randn(21,1); zeros(42,1)];
-% m1m2_segP_dist = zeros(42*2,1); %m1m2_segP_dist(40) = 1e-5;
-m1m2_segP_dist = [zeros(42,1); 1e-5*randn(42,1)];
+% 
+% m1_rbm_dist = 1e-5*randn(42,1);
+% m1_rbm_dist = pinv([0*D_seg_tt(:,1:42); D_seg_piston(:,1:42)])*...
+%     1e-5*randn(21,1);
+m1_rbm_dist = zeros(42,1);
+% m1_rbm_dist(40) = 1e-5;
+
+m2_rbm_dist = 0*randn(42,1);
+% m2_rbm_dist(40) = 1e-5;
+% m2_rbm_dist = pinv([D_seg_tt(:,43:84); D_seg_piston(:,43:84)])*...
+%     1e-5*randn(21,1);
 
 
 
@@ -390,7 +452,7 @@ fao_d4k = c2d(st.ltao.fao, FEM_Ts, c2d_opts);
 %%
 fc_es = 50;
 fes = c2d(tf((fc_es^2)*4*(pi^2),[1, 2*0.8*fc_es*2*pi, (fc_es^2)*4*(pi^2)]),...
-    st.ltao.T,c2d_opts);
+    1/8e3,c2d_opts);%st.ltao.T
 
 %% ASM inner loop controller TFs
 %%
@@ -844,7 +906,7 @@ windload_dt.time = timeFEM(end-(400*fHz_wl):end);
 % Enforce first time instant to zero
 windload_dt.time = windload_dt.time - windload_dt.time(1);
 windload_dt.signals.values = inputFEM(:,end-(400*fHz_wl):end)';
-if(true)
+if(false)
     windload_dt.signals.values = windload_dt.signals.values - windload_dt.signals.values(1,:);
     warning('Removing WL (initial) offset value!');
 end
