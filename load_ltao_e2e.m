@@ -4,7 +4,7 @@
 %
 
 % clear
-simulink_fname = 'ltao_v1';
+simulink_fname = 'ltao_e2e';
 fprintf("\n*** Loading End-to-end simulation variables (Version:%s) ***\n\n",simulink_fname);
 
 
@@ -273,15 +273,16 @@ load(filename3,'rbm2gtt');
 % Compute matrix (Sm1m2_gtt) that retaining the (on-axis) global TT in M1
 % and M2 RBM
 % -------------------
-m1_out = outputTable{'OSS_M1_lcl','indices'}{1};
-m2_out = outputTable{'MC_M2_lcl_6D','indices'}{1};
+m1_out_idxs = outputTable{'OSS_M1_lcl','indices'}{1};
+m2_out_idxs = outputTable{'MC_M2_lcl_6D','indices'}{1};
 mntAZ_out = outputTable{'OSS_AzEncoder_Angle',"indices"}{1};
 mntEL_out = outputTable{'OSS_ElEncoder_Angle',"indices"}{1};
 
-Cm1m2 = [modalDisp2Outputs(m1_out,1:3);modalDisp2Outputs(m2_out,1:3)];
-
-Cmnt = [mean(modalDisp2Outputs(mntAZ_out,1:3),1); mean(modalDisp2Outputs(mntEL_out,1:3),1)];
+Cm1m2 = [modalDisp2Outputs(m1_out_idxs,1:3);modalDisp2Outputs(m2_out_idxs,1:3)];
+Cmnt = [mean(modalDisp2Outputs(mntAZ_out,1:3),1);...
+    mean(modalDisp2Outputs(mntEL_out,1:3),1)];
 Hk_mnt_m1m2 = Cm1m2*pinv(Cmnt);
+
 % mnt2gtt = rbm2gtt * Hk_mnt_m1m2 %(for verification purposes)
 gtt2mnt = eye(2)/(rbm2gtt * Hk_mnt_m1m2);
 %
@@ -305,7 +306,7 @@ load(fullfile('/Users/rromano/Workspace/gmt-ims/studies/m1es_reconst',...
     'M1_edge_sensor_conversion.mat'), 'A1');
 KhpF2es = A1*gainMatrix(out_m1es,in_hp_axF);
 % HP_axF to M1RBM 
-KhpF2m1rbm = gainMatrix(m1_out,in_hp_axF);
+KhpF2m1rbm = gainMatrix(m1_out_idxs,in_hp_axF);
 % M1RBM to M1ES node displacements convertion
 Km1rbm_es = (KhpF2es/KhpF2m1rbm);
 
@@ -316,8 +317,7 @@ if(0), Rm1es = [pinv(Km1rbm_es(:,1:36), 1e-2); zeros(6,48)];
 else, Rm1es = pinv(Km1rbm_es, 1e-2);
 end
 
-
-if(0)
+if(1)
     [~,Ses,~] = svd(Km1rbm_es, "econ");
     figure(99)
     sigma = diag(Ses);
@@ -334,6 +334,7 @@ if(0)
     grid on; hold off; xlim([0,43]);
 
     figure(101)
+    set(gcf,'Position',[321   267   280*3/2*1.8   300]);
     subplot(121)
     imagesc(Rm1es*(Km1rbm_es));
     ylabel('Reconstructed M1-RBM','Fontsize',14);
@@ -396,6 +397,7 @@ if(0)
     grid on; hold off; xlim([0,43]);
 
     figure(102)
+    set(gcf,'Position',[321   267   280*3/2*1.8   300]);
     subplot(121)
     imagesc(Rm2es*(K_asm_2_es));
     ylabel('Reconstructed M2-RBM','Fontsize',14);
@@ -466,8 +468,9 @@ Hpd_d = c2d(st.asm.fpd, FEM_Ts, 'Tustin');
 % (segPTT2asmCMD) mapping segPTT into asmKL012 commands
 Ks = cell(7,1);
 m1_out_idxs = outputTable{"OSS_M1_lcl","indices"}{1}(:);
-m2_out_idxs = outputTable{"MC_M2_lcl_6D","indices"}{1}(:);
+if(~exist('m2_out_idxs','var')), m2_out_idxs = outputTable{"MC_M2_lcl_6D","indices"}{1}(:); end
 segPTT2asmCMD = cell(7,1);
+T6_ = cell(7,1);
 for iseg = 1:7
     % VC IO indexes
     in_idxs = inputTable{sprintf('MC_M2_S%d_VC_delta_F',iseg),"indices"}{1}(:);
@@ -502,6 +505,30 @@ for iseg = 1:7
     end
 
     segPTT2asmCMD{iseg} = asm_ssG/ (asmsegF_2_segTTP* XiKL);
+    T6_{iseg} = XiKL'*(gainMatrix(out_idxs,in_m2p_mc) - gainMatrix(out_idxs,in_m2p_m2));
+end
+
+if(0) % DEBUG
+    sttp2asm = blkdiag(segPTT2asmCMD{1},segPTT2asmCMD{2},segPTT2asmCMD{3},segPTT2asmCMD{4},...
+        segPTT2asmCMD{5},segPTT2asmCMD{6},segPTT2asmCMD{7});
+    gtt2sttp = [D_seg_tt; D_seg_piston]*Hk_mnt_m1m2*gtt2mnt;
+    Tgtt2asm = sttp2asm*gtt2sttp;
+    T5 = rbm2gtt(:,43:end)*(gainMatrix(m2_out_idxs,in_m2p_mc) - gainMatrix(m2_out_idxs,in_m2p_m2));
+    T6 = [T6_{1};T6_{2};T6_{3};T6_{4};T6_{5};T6_{6};T6_{7}];
+    Tgtt2asm_ = T6*pinv(T5);
+    figure(70);
+    subplot(121)
+    imagesc(Tgtt2asm);
+    subplot(122)
+    imagesc(Tgtt2asm_);
+    figure(71);
+    gtt2rbm = Hk_mnt_m1m2*gtt2mnt;
+    gtt2rbm_ = (gainMatrix(m2_out_idxs,in_m2p_mc) - gainMatrix(m2_out_idxs,in_m2p_m2))*...
+        pinv(T5);
+    subplot(121)
+    plot(1:42,gtt2rbm_(:,1)','o--', 1:42, gtt2rbm(43:84,1)','+-.'); axis tight;
+    subplot(122)
+    plot(1:42,gtt2rbm_(:,2)','o--', 1:42, gtt2rbm(43:84,2)','+-.'); axis tight;
 end
 
 % Set to 0 to use original pre shape filter (fc=2200Hz)
