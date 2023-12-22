@@ -9,12 +9,12 @@
 %% General analysis settings
 %%
 % Choose M2 segment
-m2_seg = 1;
+m2_seg = 7;
 
 % Flag to plot ASM inner loop results
 show_ASMact_plots = true;
 % Flag to plot AO loop results 
-show_ao_plots = false;
+show_ao_plots = true;
 % Flag to choose KL mode shapes as the ASM modal basis
 asm_KL_modes = true; %false; % 
 % Flag to apply model reduction
@@ -29,10 +29,10 @@ load_static_model = true; %false;  %
 hold_plots = false;
 
 % Set telescope structural dynamics damping
-sysDamp = 0.01;   %0.02; 
+sysDamp = 0.005;   %0.02; 
 
 % Number of frequency response points
-Nom = 4000;
+Nom = 2000;
 wrange = [2,4e3];      % Analysis frequency range
 % Frequency points (rad/s)
 w = logspace(log10(wrange(1)),log10(wrange(2)),Nom)*2*pi;
@@ -41,7 +41,7 @@ w = logspace(log10(wrange(1)),log10(wrange(2)),Nom)*2*pi;
 % Frequency response plot options
 % - - - 
 % Figure number to avoid overwrite
-figNumber = 2000;
+figNumber = 1000*m2_seg;
 % Font size for plots
 plotFontSize = 12;
 % Bode plot
@@ -160,13 +160,8 @@ if(asm_KL_modes)
     end
 end
 
-% n2 = 40;
+% KL modes 012: PTT
 asm_modes = 1:3;
-% [4,338,342,343,348,349,...
-%     353,354,355,356,359,...
-%     360,361,362,363,364,...
-%     367,368,369,370,381,...
-%     382,385,386,416,417]';   %6; %1:n2; %4;%64; %1:n2
 XiFS_ = XiFS(:,asm_modes);
 n_Zmodes = length(asm_modes);
 fprintf('Number of vector basis vectors:%d \n',n_Zmodes)
@@ -268,7 +263,6 @@ else
         D_ = blkdiag(XiFS_,XiFS_)'*...
             gainMatrix([out1;out2],[in1;in2])*blkdiag(XiFS_,XiFS_) - Gast;
         fprintf('\nIncluding the DC mismatch compensation contribution **.\n');
-%         fprintf('\nIncluding the DC mismatch compensation contribution.\n');
         G_fresp = G_fresp + frd(D_*tf(1,1,Ts,'IOdelay',1), w);%frd(D_*tf(1,1), w);%
     end
 end
@@ -484,8 +478,8 @@ if(show_ao_plots || 1)
             nichols(fdel(L_ao(i1,i1,:),max(w)),hnichols);
             hold on;
         end
-        plot_nichols_ellipse(0.5)
         xlim([-440,0]);
+        plot_nichols_ellipse(0.5)
         hold off; grid on;
     end
     

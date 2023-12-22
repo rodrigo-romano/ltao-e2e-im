@@ -1,5 +1,7 @@
 
 # #
+*.bkp
+*.dtmp
 *.asv
 # Latex files
 *.bbl
