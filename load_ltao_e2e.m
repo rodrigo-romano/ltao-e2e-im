@@ -37,13 +37,18 @@ osim.m2_asm_en = 1;         % [bool] M2 ASM inner control loop
 osim.m2_asm_ff_en = 1;      % [bool] M2 ASM FF inner control loop
 osim.m2_asmfdamp_en = 1;    % [bool] M2 ASM fluid damping pseudo control loop
 osim.m2_pos_en = 1;         % [bool] M2 Positioner control loop
+osim.m2off_en = 1;          % [bool] M2 offloading loop
+
 % AO (Adaptive Optics)
 osim.gtt_fb_en = 1;     % [bool] Global tip-tilt controller
 osim.ltws_fb_en = 1;    % [bool] (on-axis) segment TT LTWS controller 
 
+% ASM inner loop an AO controller discretization method
+% c2d_opts = c2dOptions('Method','foh'); % <- Lead to instability due to Hpd_d
+c2d_opts = c2dOptions('Method','Tustin');
+
 % Log decimation factor
 asm_modes_decim = 1; %1/FEM_Ts/1e3;
-
 
 
 %% Load telescope structural dynamics and static solution models
@@ -244,13 +249,13 @@ if(~exist("fem","var")), fem.Ts = FEM_Ts; end
 
 % Load KL modal basis
 % -------------------
-clear XiKL XiZN
 n_m = 3;
 for iseg = 1:7
     try
         variableName = sprintf('KL_%d',iseg);
-        %     load(fullfile(ModelFolder,'KLmodes.mat'),variableName);
-        load(fullfile(ModelFolder,'KLmodesQR.mat'),variableName);
+%             load(fullfile(ModelFolder,'KLmodes.mat'),variableName);
+%         load(fullfile(ModelFolder,'KLmodesQR.mat'),variableName);
+        load(fullfile(ModelFolder,'KLmodesGS36p90.mat'),variableName);%
     catch, warning('Check if the correct segment was selected!');
     end
     asm_modes = 1:n_m;
@@ -313,11 +318,12 @@ Km1rbm_es = (KhpF2es/KhpF2m1rbm);
 % M1RBM Reconstruction
 % Pi_m1 = (eye(42) - (Hk_mnt_m1m2(1:42,:)*gtt2mnt) * rbm2gtt(:,1:42));
 % Rm1es = Pi_m1*[pinv(Km1rbm_es(:,1:36), 1e-2); zeros(6,48)];
-if(0), Rm1es = [pinv(Km1rbm_es(:,1:36), 1e-2); zeros(6,48)];
+if(1), Rm1es = [pinv(Km1rbm_es(:,1:36), 1e-2); zeros(6,48)];     
+     Rm1es_ = (Km1rbm_es'*Km1rbm_es+blkdiag(zeros(36),1e6*eye(6)))\ (Km1rbm_es'); % MVD
 else, Rm1es = pinv(Km1rbm_es, 1e-2);
 end
 
-if(1)
+if(false)
     [~,Ses,~] = svd(Km1rbm_es, "econ");
     figure(99)
     sigma = diag(Ses);
@@ -368,19 +374,38 @@ K_m2p = gainMatrix(out_m2p_mc,in_m2p_mc) -gainMatrix(out_m2p_mc,in_m2p_m2) ...
         - gainMatrix(out_m2p_m2,in_m2p_mc) +gainMatrix(out_m2p_m2,in_m2p_m2);
 
 % M2 POS 6F -> ASM RB
-K_m2p_2_asm = gainMatrix(out_asm_RB,in_m2p_mc) - gainMatrix(out_asm_RB,in_m2p_m2);
+K_m2p6F_2_asmRB = gainMatrix(out_asm_RB,in_m2p_mc) - gainMatrix(out_asm_RB,in_m2p_m2);
+% M2 POS 6F -> ASM FS
+K_m2p6F_2_asmFS = gainMatrix(m2_out_idxs,in_m2p_mc) - gainMatrix(out_asm_RB,in_m2p_m2);
 % ASM RB -> M2P 6D
-K_asm_2_m2p = K_m2p / K_m2p_2_asm;
+K_asm_2_m2p = K_m2p / K_m2p6F_2_asmRB;
 % M2 POS 6F -> M2ES
 K_m2p_2_es = gainMatrix(out_m2es,in_m2p_mc)-gainMatrix(out_m2es,in_m2p_m2);
 % ASM RB -> M2ES
-K_asm_2_es = K_m2p_2_es / K_m2p_2_asm;
+K_asm_2_es = K_m2p_2_es / K_m2p6F_2_asmRB;
 
-if(0), Rm2es = [pinv(K_asm_2_es(:,1:36), 1e-2); zeros(6,48)];
-else, Rm2es = pinv(K_asm_2_es, 1e-2);
+% M2 POS 6D -> M2ES
+T_pos2e = (K_m2p_2_es / K_m2p);
+% M2P 6D -> ASM RB
+K_m2p_2_asm = K_m2p6F_2_asmRB/ K_m2p;
+
+m2es_rec_opt = 'FixedCS';%'Copt';%'Copt';%
+switch m2es_rec_opt
+    case 'Copt'
+        Aeq = blkdiag(...
+            kron(eye(2),kron(ones(1,7),1/7)),...
+            [kron(ones(1,7),1/7);...
+            [eye(6),-ones(6,1)]])...
+            *[D_seg_tt(:,43:84);D_seg_piston(:,43:84)];
+        auxtemp = pinv([K_asm_2_es;Aeq], 1e-3);
+        Rm2es = auxtemp(:,1:size(K_asm_2_es,1));
+    case 'FixedCS'
+        Rm2es = [pinv(K_asm_2_es(:,1:36), 1e-2); zeros(6,48)];
+    otherwise
+        Rm2es = pinv(K_asm_2_es, 1e-2);
 end
 
-if(0)
+if(true)
     [Ues,Ses,Ves] = svd(K_asm_2_es, "econ");
     figure(100)
     sigma = diag(Ses);
@@ -392,8 +417,18 @@ if(0)
     [Ues_,Ses_,Ves_] = svd(K_asm_2_es(:,1:36), "econ");
     sigma_ = diag(Ses_);
     semilogy(sigma_,'x'); hold on;
-    legend('D_{M2ES} singular values','Filtered (ill-conditioned) modes',...
-        '\sigma(D_{M2ES}(:,1:36))','fontsize',12,'location','southwest');
+
+    try
+        [UesLceq,SesLceq,VesLceq] = svd([K_asm_2_es;Aeq], "econ");
+        sigmaLceq = diag(SesLceq);
+        semilogy(sigmaLceq,'s');
+
+        legend('D_{M2ES} singular values','Filtered (ill-conditioned) modes',...
+            '\sigma(D_{M2ES}(:,1:36))','Linear constrained Rec','fontsize',12,'location','southwest');
+    catch
+        legend('D_{M2ES} singular values','Filtered (ill-conditioned) modes',...
+            '\sigma(D_{M2ES}(:,1:36))','fontsize',12,'location','southwest');
+    end
     grid on; hold off; xlim([0,43]);
 
     figure(102)
@@ -412,30 +447,9 @@ if(0)
     ylabel(cbar,'M2 rec-induced PTT','Fontsize',12)
 end
 
-%%
-rng('default');
-% m1_rbm_dist = pinv(D_seg_piston(:,1:42))*...
-%     1e-6*[-0.1659   -0.5880    0.8959   -0.8359   -0.7886   -0.7159   -0.6671]';
-% 
-% m1_rbm_dist = 1e-5*randn(42,1);
-% m1_rbm_dist = pinv([0*D_seg_tt(:,1:42); D_seg_piston(:,1:42)])*...
-%     1e-5*randn(21,1);
-m1_rbm_dist = zeros(42,1);
-% m1_rbm_dist(40) = 1e-5;
-
-m2_rbm_dist = 0*randn(42,1);
-% m2_rbm_dist(40) = 1e-5;
-% m2_rbm_dist = pinv([D_seg_tt(:,43:84); D_seg_piston(:,43:84)])*...
-%     1e-5*randn(21,1);
-
-
 
 %% Load parameters of controllers and other subsystems
 %%
-
-% ASM inner loop an AO controller discretization method
-% c2d_opts = c2dOptions('Method','foh'); % <- Lead to instability due to Hpd_d
-c2d_opts = c2dOptions('Method','Tustin');
 
 % File with controller and interface parameters
 fprintf('\nLoading the controller TFs using getcontrol_asm()\n');
@@ -450,11 +464,6 @@ rmpath(asm_script_folder)
 fao_d = c2d(st.ltao.fao, FEM_Ts, c2d_opts);
 fao_d4k = c2d(st.ltao.fao, FEM_Ts, c2d_opts);
 
-%% M2-ES filter
-%%
-fc_es = 50;
-fes = c2d(tf((fc_es^2)*4*(pi^2),[1, 2*0.8*fc_es*2*pi, (fc_es^2)*4*(pi^2)]),...
-    1/8e3,c2d_opts);%st.ltao.T
 
 %% ASM inner loop controller TFs
 %%
@@ -467,15 +476,17 @@ Hpd_d = c2d(st.asm.fpd, FEM_Ts, 'Tustin');
 % Rebuild ASM feedforward (FF) modal controller and calculate cell array
 % (segPTT2asmCMD) mapping segPTT into asmKL012 commands
 Ks = cell(7,1);
+Kasmoff_ = cell(7,1);
 m1_out_idxs = outputTable{"OSS_M1_lcl","indices"}{1}(:);
 if(~exist('m2_out_idxs','var')), m2_out_idxs = outputTable{"MC_M2_lcl_6D","indices"}{1}(:); end
 segPTT2asmCMD = cell(7,1);
-T6_ = cell(7,1);
 for iseg = 1:7
     % VC IO indexes
     in_idxs = inputTable{sprintf('MC_M2_S%d_VC_delta_F',iseg),"indices"}{1}(:);
     out_idxs = outputTable{sprintf('MC_M2_S%d_VC_delta_D',iseg),"indices"}{1}(:);
 
+%     K_asmF_2_m2rb = gainMatrix(out_asm_RB, in_idxs);
+    K_asmF_2_m2rb = gainMatrix(m2_out_idxs, in_idxs);
     % Update Ks with ASM modal stiffness
     if(osim.dc_mm_comp)
         asm_ssG = gainMatrix(out_idxs, in_idxs);
@@ -495,6 +506,7 @@ for iseg = 1:7
     
     fprintf('Calculating static ASM FF term for segment %d\n',iseg);
     eval(sprintf('XiKL = XiKL_S%d;',iseg));
+    asm_ssG_ = asm_ssG;
     asm_ssG = XiKL' * asm_ssG * XiKL;
 
     if (rank(asm_ssG) < size(asm_ssG,1))
@@ -505,30 +517,14 @@ for iseg = 1:7
     end
 
     segPTT2asmCMD{iseg} = asm_ssG/ (asmsegF_2_segTTP* XiKL);
-    T6_{iseg} = XiKL'*(gainMatrix(out_idxs,in_m2p_mc) - gainMatrix(out_idxs,in_m2p_m2));
+    Kasmoff_{iseg} = K_asmF_2_m2rb* XiKL *Ks{iseg};
 end
 
-if(0) % DEBUG
-    sttp2asm = blkdiag(segPTT2asmCMD{1},segPTT2asmCMD{2},segPTT2asmCMD{3},segPTT2asmCMD{4},...
-        segPTT2asmCMD{5},segPTT2asmCMD{6},segPTT2asmCMD{7});
-    gtt2sttp = [D_seg_tt; D_seg_piston]*Hk_mnt_m1m2*gtt2mnt;
-    Tgtt2asm = sttp2asm*gtt2sttp;
-    T5 = rbm2gtt(:,43:end)*(gainMatrix(m2_out_idxs,in_m2p_mc) - gainMatrix(m2_out_idxs,in_m2p_m2));
-    T6 = [T6_{1};T6_{2};T6_{3};T6_{4};T6_{5};T6_{6};T6_{7}];
-    Tgtt2asm_ = T6*pinv(T5);
-    figure(70);
-    subplot(121)
-    imagesc(Tgtt2asm);
-    subplot(122)
-    imagesc(Tgtt2asm_);
-    figure(71);
-    gtt2rbm = Hk_mnt_m1m2*gtt2mnt;
-    gtt2rbm_ = (gainMatrix(m2_out_idxs,in_m2p_mc) - gainMatrix(m2_out_idxs,in_m2p_m2))*...
-        pinv(T5);
-    subplot(121)
-    plot(1:42,gtt2rbm_(:,1)','o--', 1:42, gtt2rbm(43:84,1)','+-.'); axis tight;
-    subplot(122)
-    plot(1:42,gtt2rbm_(:,2)','o--', 1:42, gtt2rbm(43:84,2)','+-.'); axis tight;
+if(1)
+    Kasmoff = K_asm_2_m2p *...
+        [Kasmoff_{1},Kasmoff_{2},Kasmoff_{3},Kasmoff_{4},...
+        Kasmoff_{5},Kasmoff_{6},Kasmoff_{7}];
+    warning('Overwriting Kasmoff matrix!');
 end
 
 % Set to 0 to use original pre shape filter (fc=2200Hz)
@@ -561,6 +557,89 @@ else
     sm.TCmd = AOctrl.T;
 end
 
+%% M2-ES filter
+%%
+fc_es = 50;
+fes = c2d(tf((fc_es^2)*4*(pi^2),[1, 2*0.8*fc_es*2*pi, (fc_es^2)*4*(pi^2)]),...
+    st.ltao.T,c2d_opts);%
+
+f0_m2p = 10;
+Cm2p_cl = tf(2*2*pi,[1 0]) * tf((f0_m2p^2)*4*(pi^2),[1, 2*f0_m2p*2*pi, (f0_m2p^2)*4*(pi^2)]);
+fm2p_cl = c2d(feedback(1* Cm2p_cl,1),1/8e3,c2d_opts);
+
+%% M2-ASM offloading filter
+%%
+filename4 = fullfile(im.lfFolder,'ceo-data','asm_kl_2_m2rbm.mat');
+load(filename4,'kl2m2rbm');
+% Kasmoff = - K_asm_2_m2p * kl2m2rbm(:,sort([1:6:42,2:6:42,3:6:42]));
+% Kasmoff = - K_asm_2_m2p(:,sort([3:6:42,4:6:42,5:6:42])) * kl2m2rbm;
+
+
+Ki_m2off = 1.3;%0.15;%1;
+fc_m2off = 1;%0.8;
+f_ct_m2off = tf(1,1);%tf((fc_m2off^2)*4*(pi^2),[1, 2*0.8*fc_m2off*2*pi, (fc_m2off^2)*4*(pi^2)])
+fm2off = c2d(f_ct_m2off, st.ltao.T,c2d_opts);%1/8e3
+
+if(1)
+    bodeopt = bodeoptions;
+    bodeopt.FreqUnits = 'Hz';
+    bodeopt.Grid = 'on';    
+
+    w0_asm = 2*pi*800;
+    Gasm = tf(w0_asm^2,[1, 2*0.7*w0_asm, w0_asm^2]);
+    Gm2p = feedback(1* Cm2p_cl,1);
+    Tm2es = st.ltao.T;
+    Gzoh = tf(1/Tm2es,[1, 0]) - tf(1/Tm2es,[1, 0],'IOdelay',Tm2es);
+    Loff = Gasm* Gzoh* Gm2p* tf(1,[1, 0]);
+
+    figure(114)
+%     bode(Gzoh, {2*pi*0.01,2*pi*40}, bodeopt);
+    nichols(Ki_m2off*Loff, 0.5*Loff, Loff, 2*Loff,{2*pi*0.01,2*pi*40}); grid on;
+    figure(115)
+    bodemag(1/(1+Ki_m2off*Loff), 1/(1+0.5*Loff), 1/(1+Loff), 1/(1+2*Loff),...
+        {2*pi*0.01,2*pi*40},bodeopt);
+    hold on;
+    plot(logspace(-2,log10(40),500), -3*ones(500,1),'r--');
+    hold off;
+end
+
+if(~osim.m2off_en), fprintf("ASM offloading loop is disabled!\n"); end
+
+
+%% Test disturbances
+%%
+rng('default');
+% m1_rbm_dist = pinv(D_seg_piston(:,1:42))*...
+%     1e-6*[-0.1659   -0.5880    0.8959   -0.8359   -0.7886   -0.7159   -0.6671]';
+% 
+% m1_rbm_dist = 1e-5*randn(42,1);
+% m1_rbm_dist = pinv([0*D_seg_tt(:,1:42); D_seg_piston(:,1:42)])*...
+%     1e-5*randn(21,1);
+m1_rbm_dist = zeros(42,1);
+% m1_rbm_dist(40) = 1e-5;
+% m1_rbm_dist(5) = 1e-5;
+
+
+asm_kl_dist = 1e-5*randn(21,1); %1e-5*[0;1;0; 0;0;1; zeros(12,1);1;0;0];%
+% asm_kl_dist(19) = 0;
+Moff = [Kasmoff_{1},Kasmoff_{2},Kasmoff_{3},Kasmoff_{4},Kasmoff_{5},Kasmoff_{6},Kasmoff_{7}];
+m2_rbm_dist = -Moff*asm_kl_dist;
+m2_rbm_offset = m2_rbm_dist;
+
+
+% m2_rbm_dist = 0*randn(42,1);
+% m2_rbm_dist(40) = 4e-5;
+% m2_rbm_dist(5) = 5e-5;
+% m2_rbm_dist = pinv([D_seg_tt(:,43:84); D_seg_piston(:,43:84)])*...
+%     1e-5*randn(21,1);
+if(osim.wload_en)
+    asm_kl_dist = 0*asm_kl_dist;
+    m2_rbm_dist = 0*m2_rbm_dist;
+    m2_rbm_offset = 0*m2_rbm_offset;
+    warning('WL enabled! Disabling static disturbances');
+else
+    warning('Updating disturbances');
+end
 
 
 %% Input & output transformations
@@ -721,7 +800,11 @@ phiC = KoutputT * modalDisp2Outputs(indDesOutputs,mode_ind_vec);
 
 %% Open Simulink model
 %%
-open_system(simulink_fname);
+try
+    open_system(simulink_fname);
+catch
+    return
+end
 
 
 
@@ -824,6 +907,48 @@ if(0)
     % eval_asm_ctrl_disc(st.asm.fpi + st.asm.Kd*st.asm.fpd, FEM_Ts);
     eval_asm_ctrl_disc(st.asm.fpd, FEM_Ts);
     % eval_asm_ctrl_disc(flag(3,1), FEM_Ts);
+end
+
+
+%% Plot shapes of ASM eigenmodes
+%%
+m2_seg = 7;
+
+io_label = sprintf('MC_M2_S%d_VC_delta_F',m2_seg);
+nact = inputTable(io_label,1).size;
+x = zeros(nact,1);
+y = zeros(nact,1);
+
+for ii = 1:nact
+    props = inputTable(io_label,:).properties{1}{ii};
+    x(ii) = props.location(2,1);
+    y(ii) = props.location(2,2);
+end
+Q = [x, y, ones(length(y),1)];
+
+
+%
+[U_,S_,V_] = svd(asm_ssG_,'econ');
+Unttp =  U_ - (Q*(Q\U_));
+AFz = Unttp*S_*V_';
+[Urn,~,~] = svd(AFz,0);
+tri = delaunay(x,y);
+
+%
+nrow=3; ncol=4;
+multiple = 1;
+figure(575+multiple);
+set(gcf,'Units','Normalized','Position',[0 0.06 0.95 0.63])
+
+for imode = nrow*ncol*(multiple-1)+1:nrow*ncol*multiple
+    subplot(nrow,ncol,imode - nrow*ncol*(multiple-1));
+    trisurf(tri,x,y,Urn(:,imode),'Facecolor','interp','Linestyle','none');
+    hold on;
+%     plot(x,y, 'k.', 'Markersize', 0.5); hold off;
+    axis equal; axis tight; colorbar; view(2); colormap('jet');
+    title('Eigenmode #'+string(imode));
+    set(gca,'XTickLabel',[],'YTickLabel',[]);
+    hold off;
 end
 
 % ----------------------------------------------------------------------------------------
@@ -1023,3 +1148,4 @@ xlabel('global TT')
 ylabel('global TT (rad)')
 xlim([0,3])
 end
+

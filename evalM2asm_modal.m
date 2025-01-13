@@ -147,30 +147,31 @@ for ii = 1:nDim
     yCP(ii) = props.location(1,2);
 end
 % MODE SHAPES MATRIX
-pmax = 3;
+pmax = 6;
 [XiFS,~,~,n2] = utils.zernike(complex(xFS,yFS),pmax);
 %     XiwoPTT = XI(:,4:end);
 if(asm_KL_modes)
     try
         variableName = sprintf('KL_%d',m2_seg);
-        load(fullfile(ModelFolder,'KLmodesQR.mat'),variableName);
-        eval(['XiFS = ',variableName,'(:,:);']);
+%         load(fullfile(ModelFolder,'KLmodesQR.mat'),variableName);
+        load(fullfile(ModelFolder,'KLmodesGS36p90.mat'),variableName);%
+        eval(['XiFS = ',variableName,'(:,:);']); %#ok<EVLEQ> 
     catch
         warning('Check if the correct segment was selected\n');
     end
 end
 
 % KL modes 012: PTT
-asm_modes = 1:3;
+asm_modes = 1:6;
 XiFS_ = XiFS(:,asm_modes);
 n_Zmodes = length(asm_modes);
 fprintf('Number of vector basis vectors:%d \n',n_Zmodes)
 
 % Choose 1 to plot the mode shapes
-if(0) 
+if(1) 
     tri = delaunay(xFS,yFS);
-    figure(575);
-    nrow=1; ncol=1;
+    figure(574+m2_seg+10);
+    nrow=2; ncol=3;
     for imode = 1:min(n_Zmodes,nrow*ncol)
         subplot(nrow,ncol,imode);
         trisurf(tri,xFS,yFS,XiFS(:,imode),'Facecolor','interp','Linestyle','none');
@@ -179,6 +180,8 @@ if(0)
         axis equal; axis tight; colormap('jet'); colorbar; view(2);
     end
 end
+
+return
 
 % INPUT MATRIX
 in1 = inputTable{sprintf('MC_M2_S%d_VC_delta_F',m2_seg),"indices"}{1}(:);
